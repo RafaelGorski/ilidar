@@ -9,6 +9,10 @@ import Foundation
 import AVFoundation
 import UIKit
 
+extension Notification.Name {
+    static let serverDisconnected = Notification.Name("iLiDARServerDisconnected")
+}
+
 class DataStorage {
     static let shared = DataStorage()
     
@@ -21,21 +25,14 @@ class DataStorage {
     private var frameCache: [String: Data] = [:]
     private let maxCacheSize = 10
     
-    private(set) var currentHostIP = "10.129.164.22"
+    private(set) var currentHostIP = ""
     private(set) var currentPort = 5678
-    
+
     init() {
-        socketManager.connectToServer(host_ip: currentHostIP, port: currentPort) { success in
-                    if success {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            self.readyToSend = true
-                            print("Initial connection established, ready to send.")
-                        }
-                    } else {
-                        self.readyToSend = false
-                        print("Initial connection failed to \(self.currentHostIP):\(self.currentPort)")
-                    }
-                }
+        socketManager.onDisconnect = { [weak self] in
+            self?.readyToSend = false
+            NotificationCenter.default.post(name: .serverDisconnected, object: nil)
+        }
     }
     
     func disconnect() {
@@ -44,7 +41,8 @@ class DataStorage {
     }
     
     
-    func updateConnection(host_ip: String, port: Int, completion: @escaping (Bool) -> Void) {
+    func updateConnection(host_ip: String, port: Int, fingerprint: String, token: String,
+                          completion: @escaping (Bool) -> Void) {
         // Disconnect existing connection
         socketManager.disconnect()
         readyToSend = false
@@ -55,39 +53,28 @@ class DataStorage {
         
         var completionCalled = false
         
-        // Schedule a 3-second timeout on the main run loop
-        let timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: false) { [weak self] _ in
             guard let self = self, !completionCalled else { return }
-            // Timeout triggered (no successful connection within 3s)
             self.readyToSend = false
-            print("Connection to \(host_ip):\(port) timed out after 3 seconds.")
             completionCalled = true
+            self.socketManager.disconnect()
+            print("Connection to \(host_ip):\(port) timed out.")
             completion(false)
         }
 
         // Attempt to connect with the new settings
-        socketManager.connectToServer(host_ip: host_ip, port: port) { success in
-            // Switch back to the main thread for UI/state updates
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self, !completionCalled else { return }
-                // Cancel the timeout timer since we got a result
-                timer.invalidate()
-                
-                if success {
-                    // Connection succeeded
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        self.readyToSend = true
-                        print("Ready to send data with new connection settings.")
-                        completionCalled = true
-                        completion(true)
-                    }
-                } else {
-                    // Connection failed immediately
-                    self.readyToSend = false
-                    print("Failed to connect to the server at \(host_ip):\(port).")
-                    completionCalled = true
-                    completion(false)
-                }
+        socketManager.connectToServer(host_ip: host_ip, port: port, fingerprint: fingerprint, token: token) { success in
+            guard !completionCalled else { return }
+            timer.invalidate()
+            completionCalled = true
+            if success {
+                self.readyToSend = true
+                print("Ready to send data with new connection settings.")
+                completion(true)
+            } else {
+                self.readyToSend = false
+                print("Failed to connect to the server at \(host_ip):\(port).")
+                completion(false)
             }
         }
     }
@@ -134,7 +121,8 @@ class DataStorage {
     }
     
     func transmitFrame(imageData: CVImageBuffer, depthData: CVPixelBuffer, fileName: String) {
-        if !readyToSend {
+        let connectionID = socketManager.currentConnectionID()
+        if !readyToSend || connectionID == 0 {
             print("Fail to establish socket for data transmission.")
             return
         }
@@ -157,19 +145,20 @@ class DataStorage {
             }
             
             if let transmitDepth = self.convertDepthData(depthData: depthData) {
-                self.socketManager.sendBIN(fileName: fileName + ".bin", data: transmitDepth)
+                self.socketManager.sendBIN(fileName: fileName + ".bin", data: transmitDepth, connectionID: connectionID)
                 
             } else {
                 print("Fail to convert depth data.")
             }
-            self.socketManager.sendJPG(fileName: fileName + ".jpg", data: jpegData)
+            self.socketManager.sendJPG(fileName: fileName + ".jpg", data: jpegData, connectionID: connectionID)
         }
     }
     
     // MARK: - Real-time Depth Visualization Support
     
     func transmitDepthForVisualization(depthData: CVPixelBuffer) {
-        if !readyToSend {
+        let connectionID = socketManager.currentConnectionID()
+        if !readyToSend || connectionID == 0 {
             return
         }
         
@@ -191,12 +180,13 @@ class DataStorage {
             packet.append(depthDataRaw)
             
             // Send the packet
-            self.socketManager.sendRawData(packet)
+            self.socketManager.sendRawData(packet, connectionID: connectionID)
         }
     }
     
     func transmitConfig(calibrationData: AVCameraCalibrationData, fileName: String) {
-        if !readyToSend {
+        let connectionID = socketManager.currentConnectionID()
+        if !readyToSend || connectionID == 0 {
             print("Fail to establish socket for data transmission.")
             return
         }
@@ -212,7 +202,7 @@ class DataStorage {
         csvContent += "\(fx),\(fy),\(cx),\(cy)\n"
         
         if let csvData = csvContent.data(using: .utf8) {
-            socketManager.sendCSV(fileName: fileName  + ".csv", data: csvData)
+            socketManager.sendCSV(fileName: fileName  + ".csv", data: csvData, connectionID: connectionID)
         } else {
             print("Fail to convert CSV content to Data")
         }
