@@ -85,9 +85,11 @@ class ClientHandler(threading.Thread):
                 if not self.buffer:
                     packet_deadline = time.monotonic() + SOCKET_TIMEOUT
                 self.buffer += data
-                self.process_buffer()
+                packet_completed = self.process_buffer()
                 if not self.buffer:
                     packet_deadline = None
+                elif packet_completed:
+                    packet_deadline = time.monotonic() + SOCKET_TIMEOUT
         except (OSError, ssl.SSLError, ProtocolError, UnicodeDecodeError) as error:
             print(f"[!] Client {self.client_address}: {error}")
         finally:
@@ -112,13 +114,14 @@ class ClientHandler(threading.Thread):
         self.client_socket.sendall(b"OK\n")
 
     def process_buffer(self):
+        packet_completed = False
         while self.buffer:
             filename_length = self.buffer[0]
             if not filename_length:
                 raise ProtocolError("empty filename")
             header_size = 11 + filename_length
             if len(self.buffer) < header_size:
-                return
+                return packet_completed
             filename = self.buffer[1:1 + filename_length].decode("utf-8")
             data_type, size, sequence, is_last = struct.unpack(
                 ">BIIB", self.buffer[1 + filename_length:header_size]
@@ -129,10 +132,12 @@ class ClientHandler(threading.Thread):
             if size == 0 or size > MAX_PACKET_SIZE or sequence >= MAX_CHUNKS or is_last not in (0, 1):
                 raise ProtocolError("invalid packet header")
             if len(self.buffer) < header_size + size:
-                return
+                return packet_completed
             payload = self.buffer[header_size:header_size + size]
             self.buffer = self.buffer[header_size + size:]
             self.handle_packet(filename, data_type, sequence, bool(is_last), payload)
+            packet_completed = True
+        return packet_completed
 
     def handle_packet(self, filename, data_type, sequence, is_last, payload):
         receiver = self.files.get(filename)

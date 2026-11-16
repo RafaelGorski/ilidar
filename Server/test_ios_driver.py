@@ -9,7 +9,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
+import ios_driver
 
 SERVER = Path(__file__).with_name("ios_driver.py")
 TOKEN = "a" * 64
@@ -20,6 +22,60 @@ def packet(filename, data_type=1, payload=b"image", sequence=0, last=1, size=Non
     return (bytes([len(name)]) + name
             + struct.pack(">BIIB", data_type, len(payload) if size is None else size, sequence, last)
             + payload)
+
+
+class PacketDeadlineTests(unittest.TestCase):
+    class FakeSocket:
+        def __init__(self, received):
+            self.received = iter(received)
+            self.timeouts = []
+
+        def settimeout(self, timeout):
+            self.timeouts.append(timeout)
+
+        def recv(self, _size):
+            return next(self.received)
+
+        def sendall(self, _data):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeSlots:
+        def release(self):
+            pass
+
+    def test_deadline_renews_when_completed_packet_leaves_partial_next_packet(self):
+        first = packet("first.jpg")
+        second = packet("second.jpg")
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            timeout_values = self.run_handler(
+                [first[:-2], first[-2:] + second[:1], b""], [0, 1, 2, 3], directory
+            )
+        self.assertEqual(timeout_values, [ios_driver.SOCKET_TIMEOUT, ios_driver.IDLE_TIMEOUT, 14, 14])
+
+    def test_deadline_does_not_renew_for_incomplete_only_data(self):
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            timeout_values = self.run_handler(
+                [b"\x08", b"filename", b""], [0, 1, 2], directory
+            )
+        self.assertEqual(timeout_values, [ios_driver.SOCKET_TIMEOUT, ios_driver.IDLE_TIMEOUT, 14, 13])
+
+    def run_handler(self, received, clock, directory):
+        with patch("ios_driver.time.monotonic", side_effect=clock):
+            return self.run_handler_with_clock(received, directory)
+
+    def run_handler_with_clock(self, received, directory):
+        client_socket = self.FakeSocket(received)
+        handler = ios_driver.ClientHandler(
+            client_socket, ("test", 0),
+            type("TLSContext", (), {"wrap_socket": lambda _self, sock, server_side: sock})(),
+            b"", directory, self.FakeSlots()
+        )
+        handler.authenticate = lambda: None
+        handler.run()
+        return client_socket.timeouts
 
 
 class ServerIntegrationTests(unittest.TestCase):
