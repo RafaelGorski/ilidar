@@ -11,6 +11,12 @@
 *.png
 *.csv
 
+# Local receiver data and credentials
+/Server/uploads/
+/Server/server-key.pem
+/Server/server-cert.pem
+/Server/server-token.txt
+
 # Xcode - User files
 xcuserdata/
 

@@ -40,35 +40,64 @@ Only specific iPhone models equipped with LiDAR are supported. Ensure your devic
 
 ### Setting Up the Server
 
-1. Ensure both your iPhone and PC are connected to the same Wi-Fi network
-2. From the repository root, run:
+The server uses TLS and a shared token. These changes are not compatible with
+older versions of the app or server; update both together.
+
+1. On the PC, from the repository root, create a private key, certificate, and
+   token (keep the key and token private):
 
 ```bash
 cd Server
-conda create -n ilidar python=3.10 -y
-conda activate ilidar
-pip install -r requirements.txt
-export ILIDAR_SERVER_HOST=192.168.1.10
-python ios_driver.py
+umask 077
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -subj '/CN=iLiDAR server' -keyout server-key.pem -out server-cert.pem
+openssl rand -hex 32 > server-token.txt
+openssl x509 -in server-cert.pem -noout -fingerprint -sha256
 ```
 
-Set `ILIDAR_SERVER_HOST` to the PC's Wi-Fi IP address so the server listens only on that network interface. Without this setting, the server listens on `127.0.0.1` and accepts connections only from the same computer. The server will listen on port `5678` and create an `uploads` folder to store incoming data. You should see:
+2. Transfer the certificate fingerprint and token to the phone through a
+   trusted channel. In the app's Settings, enter both under **Secure
+   Connection**. They are held in memory and must be entered again after the
+   app restarts.
+3. Start the server with Python 3.10 or later:
 
 ```bash
-[*] Server listening on 192.168.1.10:5678
+python ios_driver.py --cert server-cert.pem --key server-key.pem \
+  --token-file server-token.txt
+```
+
+The server listens on `127.0.0.1:5678` by default and creates an `uploads`
+directory. For an iPhone on the same trusted Wi-Fi network, add
+`--host <PC's Wi-Fi IP>` to bind to that interface and use the same address in
+the app. Avoid exposing the port to the internet; restrict access with a
+firewall. Uploads never overwrite existing files. To rotate the token, replace
+the token file and restart the server; changing the certificate also requires
+updating the fingerprint in the app. The app trusts the exact pinned
+certificate rather than a CA and does not enforce its expiration; replace the
+pin manually if the key is compromised.
+
+Authenticated connections close after five minutes without a packet. Incomplete
+packets and authentication attempts have a shorter 15-second deadline.
+
+The receiver uses Python's standard library. The dependencies in
+`Server/requirements.txt` are needed only for the analysis scripts and require
+Python 3.11 or later:
+
+```bash
+python -m pip install -r Server/requirements.txt
 ```
 
 ### Streaming Data
 
 1. Open the iLiDAR app on your iPhone
-2. Enter your PC's IP address (e.g., `192.168.1.10`)
-3. Tap "Connect" to establish the connection
-4. Tap "Enable Network Transfer" to begin streaming
+2. Add and select your PC's IP address in Settings
+3. Enter the verified certificate fingerprint and token, then tap "Connect"
+4. Tap "Start Transfer" to begin streaming
 
 If successful, you'll see logs like:
 
 ```bash
-[>] Received Packet - Filename: 20241208_223229_20241208_223232_76_frame000316.jpg, Type: JPG, Seq: 55, IsLast: False, Size: 1024 bytes
+[>] Received packet: '20241208_223229_20241208_223232_76_frame000316.jpg', sequence 55, 1024 bytes
 ```
 
 **Note**: The app cannot run on the iOS Simulator as it requires the LiDAR API, which is not available in the simulator.
@@ -76,6 +105,12 @@ If successful, you'll see logs like:
 ### Analyzing Received Data
 
 Use the provided scripts in `Server/read_depth_data.py` to analyze the received depth and RGB data. Sample files are available in `Server/example_data/` for testing.
+
+To run the receiver's local integration tests (Python and OpenSSL required):
+
+```bash
+python -m unittest discover -s Server -p 'test_ios_driver.py' -v
+```
 
 ## Recent Updates
 

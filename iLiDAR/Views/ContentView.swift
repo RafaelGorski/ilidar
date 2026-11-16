@@ -176,6 +176,18 @@ enum ConnectionState {
     }
 }
 
+private func securityCredentials(fingerprint: String, token: String) -> (String, String)? {
+    let fingerprint = fingerprint.lowercased().filter { $0 != ":" && !$0.isWhitespace }
+    let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+    let hex = CharacterSet(charactersIn: "0123456789abcdef")
+    guard fingerprint.count == 64, token.count == 64,
+          fingerprint.unicodeScalars.allSatisfy({ hex.contains($0) }),
+          token.unicodeScalars.allSatisfy({ hex.contains($0) }) else {
+        return nil
+    }
+    return (fingerprint, token)
+}
+
 // MARK: - Main Content View
 struct ContentView: View {
     @StateObject private var manager = CameraManager()
@@ -188,6 +200,8 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
+    @State private var serverFingerprint = ""
+    @State private var serverToken = ""
     @State private var currentOrientation: UIDeviceOrientation = .portrait
     @State private var isOrientationLocked: Bool = true
     
@@ -211,6 +225,8 @@ struct ContentView: View {
                 minDepth: $minDepth,
                 connectionState: $connectionState,
                 isConnecting: $isConnecting,
+                serverFingerprint: $serverFingerprint,
+                serverToken: $serverToken,
                 onConnect: connectToServer // pass closure
             )
         }
@@ -221,6 +237,13 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text(alertMessage)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .serverDisconnected)) { _ in
+            if manager.enableNetworkTransfer {
+                manager.toggleNetworkTransfer()
+            }
+            connectionState = .disconnected
+            isConnecting = false
         }
     }
     
@@ -405,6 +428,7 @@ struct ContentView: View {
                 )
             }
             .buttonStyle(PlainButtonStyle())
+            .disabled(!connectionState.isConnected && !manager.enableNetworkTransfer)
             
             Divider()
                 .frame(height: 25)
@@ -442,25 +466,15 @@ struct ContentView: View {
     // MARK: - Connection Actions
     private func connectButtonTapped() {
         guard let selectedAddress = ipManager.selectedAddress else { return }
-        
-        isConnecting = true
-        connectionState = .connecting
-        
-        DataStorage.shared.updateConnection(host_ip: selectedAddress.ip, port: selectedAddress.port) { success in
-            DispatchQueue.main.async {
-                if success {
-                    self.connectionState = .connected
-                } else {
-                    self.connectionState = .failed
-                }
-                self.isConnecting = false
-            }
-        }
+        connectToServer(selectedAddress)
     }
     
     private func disconnectButtonTapped() {
         isConnecting = true
         connectionState = .disconnecting
+        if manager.enableNetworkTransfer {
+            manager.toggleNetworkTransfer()
+        }
         
         DataStorage.shared.disconnect()
         
@@ -471,17 +485,17 @@ struct ContentView: View {
     }
     
     private func connectToServer(_ address: SavedIPAddress) {
+        guard let (fingerprint, token) = securityCredentials(fingerprint: serverFingerprint, token: serverToken) else {
+            alertMessage = "Enter the server's SHA-256 certificate fingerprint and lowercase 64-character token in Settings."
+            showingAlert = true
+            return
+        }
         isConnecting = true
         connectionState = .connecting
-        DataStorage.shared.updateConnection(host_ip: address.ip, port: address.port) { success in
-            DispatchQueue.main.async {
-                if success {
-                    self.connectionState = .connected
-                } else {
-                    self.connectionState = .failed
-                }
-                self.isConnecting = false
-            }
+        DataStorage.shared.updateConnection(host_ip: address.ip, port: address.port,
+                                            fingerprint: fingerprint, token: token) { success in
+            self.connectionState = success ? .connected : .failed
+            self.isConnecting = false
         }
     }
     
@@ -505,11 +519,14 @@ struct SettingsView: View {
     @Binding var minDepth: Float
     @Binding var connectionState: ConnectionState
     @Binding var isConnecting: Bool
+    @Binding var serverFingerprint: String
+    @Binding var serverToken: String
     var onConnect: (SavedIPAddress) -> Void // add this line
     
     @Environment(\.dismiss) private var dismiss
     @State private var showingIPManager = false
     @State private var showingAddIP = false
+    @State private var showingCredentialError = false
     
     let maxRangeDepth = Float(15)
     let minRangeDepth = Float(0)
@@ -526,6 +543,20 @@ struct SettingsView: View {
                     
                     // Network settings
                     networkSettingsSection
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Secure Connection").font(.headline)
+                        TextField("Server certificate SHA-256 fingerprint", text: $serverFingerprint)
+                            .textInputAutocapitalization(.never)
+                            .disableAutocorrection(true)
+                        SecureField("Server token", text: $serverToken)
+                            .textInputAutocapitalization(.never)
+                            .disableAutocorrection(true)
+                        Text("Credentials are kept in memory only. Verify the fingerprint through a trusted channel.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .modifier(CardStyle())
                     
                     // Transfer settings
                     transferSettingsSection
@@ -550,6 +581,11 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showingAddIP) {
             AddIPAddressView(ipManager: ipManager)
+        }
+        .alert("Invalid Credentials", isPresented: $showingCredentialError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Enter the server's SHA-256 certificate fingerprint and lowercase 64-character token.")
         }
     }
     
@@ -584,7 +620,7 @@ struct SettingsView: View {
                 if connectionState.isDisconnected {
                     Button(action: {
                         if let selectedAddress = ipManager.selectedAddress {
-                            onConnect(selectedAddress)
+                            requestConnection(selectedAddress)
                         }
                     }) {
                         HStack {
@@ -866,25 +902,23 @@ struct SettingsView: View {
     
     private func connectButtonTapped() {
         guard let selectedAddress = ipManager.selectedAddress else { return }
-        
-        isConnecting = true
-        connectionState = .connecting
-        
-        DataStorage.shared.updateConnection(host_ip: selectedAddress.ip, port: selectedAddress.port) { success in
-            DispatchQueue.main.async {
-                if success {
-                    self.connectionState = .connected
-                } else {
-                    self.connectionState = .failed
-                }
-                self.isConnecting = false
-            }
+        requestConnection(selectedAddress)
+    }
+
+    private func requestConnection(_ address: SavedIPAddress) {
+        guard securityCredentials(fingerprint: serverFingerprint, token: serverToken) != nil else {
+            showingCredentialError = true
+            return
         }
+        onConnect(address)
     }
 
     private func disconnectButtonTapped() {
         isConnecting = true
         connectionState = .disconnecting
+        if manager.enableNetworkTransfer {
+            manager.toggleNetworkTransfer()
+        }
         
         DataStorage.shared.disconnect()
         
