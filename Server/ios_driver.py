@@ -27,7 +27,7 @@ DATA_TYPE_EXTENSION = {
 }
 
 # Server details
-SERVER_HOST = '0.0.0.0'  # Listen on all available interfaces
+SERVER_HOST = os.environ.get('ILIDAR_SERVER_HOST', '127.0.0.1')
 SERVER_PORT = 5678        # Port to listen on
 
 # Directory where received files will be stored

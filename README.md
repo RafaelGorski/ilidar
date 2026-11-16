@@ -48,13 +48,14 @@ cd Server
 conda create -n ilidar python=3.10 -y
 conda activate ilidar
 pip install -r requirements.txt
+export ILIDAR_SERVER_HOST=192.168.1.10
 python ios_driver.py
 ```
 
-The server will listen on port `5678` and create an `uploads` folder to store incoming data. You should see:
+Set `ILIDAR_SERVER_HOST` to the PC's Wi-Fi IP address so the server listens only on that network interface. Without this setting, the server listens on `127.0.0.1` and accepts connections only from the same computer. The server will listen on port `5678` and create an `uploads` folder to store incoming data. You should see:
 
 ```bash
-[*] Server listening on 0.0.0.0:5678
+[*] Server listening on 192.168.1.10:5678
 ```
 
 ### Streaming Data
