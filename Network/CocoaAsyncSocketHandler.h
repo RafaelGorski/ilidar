@@ -16,12 +16,15 @@ typedef void (^ConnectionCallback)(BOOL success);
 
 @property (nonatomic, copy) ResponseBlock getResponseBlock;
 @property (nonatomic, copy) ConnectionCallback connectionCallback;
+@property (nonatomic, copy) void (^disconnectCallback)(void);
 
 // Setup connection with host and port
-- (void)setupSocketHost:(NSString *)host port:(NSInteger)port;
+- (void)setupSocketHost:(NSString *)host port:(NSInteger)port
+           fingerprint:(NSString *)fingerprint token:(NSString *)token;
 
-// Send binary data
-- (void)sendMyData:(NSData *)data;
+// Send only while the original authenticated connection is still active.
+- (uint64_t)currentConnectionID;
+- (BOOL)sendMyData:(NSData *)data connectionID:(uint64_t)connectionID;
 
 // Disconnect the socket
 - (void)disconnect;

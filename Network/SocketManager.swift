@@ -69,15 +69,22 @@ struct DataPacket {
 
 class SocketManager {
     let socketHandler = CocoaAsyncSocketHandler()
+    var onDisconnect: (() -> Void)?
 
     init() {
         // Configure response handling closure
         socketHandler.getResponseBlock = { response in
             print("Received server response: \(response)")
         }
+        socketHandler.disconnectCallback = { [weak self] in
+            DispatchQueue.main.async {
+                self?.onDisconnect?()
+            }
+        }
     }
     
-    func connectToServer(host_ip: String, port: Int, completion: @escaping (Bool) -> Void) {
+    func connectToServer(host_ip: String, port: Int, fingerprint: String, token: String,
+                         completion: @escaping (Bool) -> Void) {
         // Set the completion block on the Objective-C side
         socketHandler.connectionCallback = { success in
             DispatchQueue.main.async {
@@ -85,14 +92,18 @@ class SocketManager {
             }
         }
         
-        socketHandler.setupSocketHost(host_ip, port: port)
+        socketHandler.setupSocketHost(host_ip, port: port, fingerprint: fingerprint, token: token)
     }
     
     func disconnect() {
         socketHandler.disconnect()
     }
     
-    func sendData(dataType: DataType, fileName: String, data: Data, chunkSize: Int = 1024) {
+    func currentConnectionID() -> UInt64 {
+        return socketHandler.currentConnectionID()
+    }
+
+    func sendData(dataType: DataType, fileName: String, data: Data, connectionID: UInt64, chunkSize: Int = 1024) {
         let totalSize = data.count
         var offset = 0
         var sequenceNumber: UInt32 = 0
@@ -103,29 +114,34 @@ class SocketManager {
             let isLast = (offset + thisChunkSize) >= totalSize
             let packet = DataPacket (dataType: dataType, fileName: fileName, data: chunk, sequenceNumber: sequenceNumber, isLast: isLast)
             let packetData = packet.toData()
-            socketHandler.sendMyData(packetData)
+            guard socketHandler.sendMyData(packetData, connectionID: connectionID) else {
+                print("Connection changed before transfer completed.")
+                return
+            }
             offset += thisChunkSize
             sequenceNumber += 1
         }
         
     }
     
-    func sendJPG(fileName: String, data: Data, chunkSize: Int = 1024) {
-        sendData(dataType: .jpg, fileName: fileName, data: data, chunkSize: chunkSize)
+    func sendJPG(fileName: String, data: Data, connectionID: UInt64, chunkSize: Int = 1024) {
+        sendData(dataType: .jpg, fileName: fileName, data: data, connectionID: connectionID, chunkSize: chunkSize)
     }
     
-    func sendBIN(fileName: String, data: Data, chunkSize: Int = 1024) {
-        sendData(dataType: .bin, fileName: fileName, data: data, chunkSize: chunkSize)
+    func sendBIN(fileName: String, data: Data, connectionID: UInt64, chunkSize: Int = 1024) {
+        sendData(dataType: .bin, fileName: fileName, data: data, connectionID: connectionID, chunkSize: chunkSize)
     }
     
-    func sendCSV(fileName: String, data: Data, chunkSize: Int = 1024) {
-        sendData(dataType: .csv, fileName: fileName, data: data, chunkSize: chunkSize)
+    func sendCSV(fileName: String, data: Data, connectionID: UInt64, chunkSize: Int = 1024) {
+        sendData(dataType: .csv, fileName: fileName, data: data, connectionID: connectionID, chunkSize: chunkSize)
     }
     
     // MARK: - Real-time Visualization Support
     
-    func sendRawData(_ data: Data) {
+    func sendRawData(_ data: Data, connectionID: UInt64) {
         // Send raw data without packet structure for real-time visualization
-        socketHandler.sendMyData(data)
+        if !socketHandler.sendMyData(data, connectionID: connectionID) {
+            print("Connection changed before visualization data could be sent.")
+        }
     }
 }

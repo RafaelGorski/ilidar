@@ -9,6 +9,12 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from scipy.ndimage import zoom
 
+
+def read_color_image(file_path):
+    with Image.open(file_path, formats=["JPEG"]) as image:
+        return np.array(image)
+
+
 def read_raw_depth_data(file_path, width, height):
     """
     Reads raw depth data from a file.
@@ -89,7 +95,7 @@ if __name__ == "__main__":
     depth_data = read_raw_depth_data(depth_file_path, depth_width, depth_height)
     scaled_depth_data = zoom(depth_data.astype(np.float32), scale_factor)
 
-    color_image = np.array(Image.open(color_image_path))
+    color_image = read_color_image(color_image_path)
 
     visualize_depth_and_color(scaled_depth_data, color_image)
 
